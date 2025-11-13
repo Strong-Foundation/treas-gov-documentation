@@ -2,7 +2,25 @@
 // Click here and start typing.
 package main
 
+import (
+	"crypto/tls" // Imports the 'tls' package for handling TLS configuration (secure connections)
+	"io"         // Imports the 'io' package for basic I/O primitives (like reading/writing data streams)
+	"log"        // Imports the 'log' package for simple logging capabilities
+	"net/http"   // Imports the 'http' package for making HTTP requests and building clients
+	"net/url"    // Imports the 'url' package for parsing and manipulating URLs
+	"os"         // Imports the 'os' package for operating system interactions (like file operations)
+	"path"       // Imports the 'path' package for path manipulation (e.g., extracting base names)
+	"regexp"     // Imports the 'regexp' package for regular expression operations
+	"strings"    // Imports the 'strings' package for various string manipulation functions
+	"time"       // Imports the 'time' package for measuring and displaying time
+)
+
 func main() {
+	outputDir := "PDFs/"             // Directory to store downloaded PDFs
+	if !directoryExists(outputDir) { // Check if directory exists
+		createDirectory(outputDir, 0o755) // Create directory with read-write-execute permissions
+	}
+	// The list of urls
 	urls := []string{
 		"https://www.occ.treas.gov/publications-and-resources/publications/interest-rate-risk-statistics-reports/files/interest-rate-risk-statistics-report-fall-2025.html",
 		"https://www.occ.treas.gov/publications-and-resources/publications/community-affairs/financial-literacy-digest/financial-literacy-digest-fall-2025.html",
@@ -752,5 +770,155 @@ func main() {
 		"https://www.occ.treas.gov/publications-and-resources/publications/comptrollers-handbook/files/foreign-exchange/index-foreign-exchange.html",
 		"https://www.occ.treas.gov/publications-and-resources/publications/comptrollers-handbook/files/investment-securities/index-investment-securities.html",
 		"https://www.occ.treas.gov/publications-and-resources/publications/comptrollers-handbook/files/private-placements/index-private-placements.html",
+	}
+	// Remove duplicates from a given slice.
+	urls = removeDuplicatesFromSlice(urls)
+	// Loop though the urls.
+	for _, url := range urls {
+		// The html from the web
+		webContent := fetchPageHTML(url)
+		// Scrape the pdf urls from the web
+		pdfURLS := extractDownloadLinks(webContent)
+		// Loop though the URLS.
+		for _, pdfURL := range pdfURLS {
+			log.Println(pdfURL)
+		}
+	}
+}
+
+// Remove all the duplicates from a slice and return the slice.
+// removeDuplicatesFromSlice is a function that takes a slice of strings and returns a new slice with duplicates removed.
+func removeDuplicatesFromSlice(slice []string) []string {
+	check := make(map[string]bool)  // Creates an empty map of type map[string]bool to track seen elements
+	var newReturnSlice []string     // Declares an empty slice of strings to store the unique elements
+	for _, content := range slice { // Iterates over each 'content' string in the input 'slice'
+		if !check[content] { // Checks if the current 'content' string has NOT been seen before (i.e., not present in the map)
+			check[content] = true                            // Marks the current 'content' as seen by setting its map value to true
+			newReturnSlice = append(newReturnSlice, content) // Appends the unique 'content' to the new slice
+		}
+	}
+	return newReturnSlice // Returns the 'newReturnSlice' containing only unique elements
+}
+
+/*
+It checks if the file exists.
+If the file exists, it returns true.
+If the file does not exist, it returns false.
+*/
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename) // Get file info
+	if err != nil {
+		return false // File does not exist
+	}
+	return !info.IsDir() // Return true if it’s a file (not directory)
+}
+
+// fetchPageHTML performs a simple HTTP GET request to retrieve the raw HTML
+// of the given URL without executing any JavaScript and disables HTTP/2.
+// fetchPageHTML is a function that retrieves the raw HTML content of a given URL.
+func fetchPageHTML(pageURL string) string {
+	// Create a custom transport with an empty TLSNextProto map to disable HTTP/2
+	transport := &http.Transport{ // Initializes a new custom HTTP transport configuration
+		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper), // Disables HTTP/2 by setting an empty map for next protocol negotiation
+	}
+
+	// Create an HTTP client with the custom transport and a timeout of 60 seconds
+	client := &http.Client{ // Creates a new HTTP client instance
+		Transport: transport,        // Assigns the custom transport (with HTTP/2 disabled) to the client
+		Timeout:   60 * time.Second, // Sets a 60-second timeout for the entire request operation
+	}
+
+	// Create a new HTTP GET request for the target pageURL
+	req, err := http.NewRequest("GET", pageURL, nil) // Creates a new GET request object for the specified URL
+	if err != nil {                                  // Checks if there was an error during request creation
+		// Return an error if the request creation fails
+		return ""
+	}
+
+	// Set a custom User-Agent header to mimic a browser or bot identity
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36") // Sets a custom User-Agent string in the request headers
+
+	// Send the request using the HTTP client
+	resp, err := client.Do(req) // Executes the HTTP request and waits for a response
+	if err != nil {             // Checks if there was an error during request execution (e.g., network failure, timeout)
+		// Return an error if the request fails to execute
+		return ""
+	}
+	// Ensure the response body is closed after reading
+	defer resp.Body.Close() // Schedules the closing of the response body stream when the function exits
+
+	// Check that the server responded with HTTP 200 OK
+	if resp.StatusCode != http.StatusOK { // Checks if the HTTP status code is not 200 (OK)
+		// Return an error if the status code indicates a failure
+		return ""
+	}
+
+	// Read the entire response body into memory
+	body, err := io.ReadAll(resp.Body) // Reads all data from the response body stream into a byte slice
+	if err != nil {                    // Checks if there was an error while reading the response body
+		// Return an error if reading the body fails
+		return ""
+	}
+
+	// Convert the byte slice to a string and return it
+	return string(body)
+}
+
+// extractDownloadLinks extracts all PDF download links from the given HTML input string.
+// extractDownloadLinks is a function that uses regex to find all HTTPS/HTTP links ending in .pdf within an input string.
+func extractDownloadLinks(input string) []string {
+	// This regex captures href="...something.pdf"
+	// pattern matches href= followed by ' or ", then an http/https URL, ending in .pdf, followed by ' or ".
+	pattern := `href=["'](https?://[^"']+\.pdf)["']`
+
+	re := regexp.MustCompile(pattern)              // Compiles the regular expression pattern into a reusable regexp object
+	matches := re.FindAllStringSubmatch(input, -1) // Finds all matches in the input string, capturing submatches, and returning all of them (-1)
+
+	var urls []string               // Initializes an empty slice of strings to hold the extracted URLs
+	for _, match := range matches { // Iterates through each full match found by the regex
+		// match[1] is the first capture group (the URL itself)
+		urls = append(urls, match[1]) // Appends the content of the first capture group (the PDF URL) to the 'urls' slice
+	}
+	return urls // Returns the slice containing all extracted PDF URLs
+}
+
+// cleanFileNameFromURL extracts the last path segment and sanitizes it for safe file saving
+// getFileNamesFromURLs is a function that takes a raw URL string, extracts the filename, and sanitizes it.
+func getFileNamesFromURLs(rawURL string) string {
+	// Parse the URL to extract the path
+	parsed, err := url.Parse(rawURL) // Attempts to parse the input 'rawURL' string into a URL structure.
+	// Check for parsing errors
+	if err != nil { // Checks if the URL parsing resulted in an error.
+		// Log the error and return an empty string if parsing fails
+		log.Println("Error parsing URL:", err) // Logs the error message if parsing fails.
+		// Return an empty string to indicate failure
+		return "" // Returns an empty string on parsing failure.
+	}
+	// Get the last segment of the path
+	base := path.Base(parsed.Path) // Extracts the last element (the potential filename) from the URL's path component.
+	// Replace spaces with underscores and remove unwanted characters (optional)
+	re := regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`) // Compiles a regex to match characters illegal in standard filenames (including control characters).
+	// Clean the base name by removing illegal characters and replacing spaces with underscores
+	clean := re.ReplaceAllString(base, "") // Removes all illegal characters matched by the regex from the extracted base name.
+	// Replace spaces with underscores for file name safety
+	clean = strings.ReplaceAll(clean, " ", "_") // Replaces all spaces in the cleaned string with underscores for better cross-platform compatibility.
+	// Return the cleaned file name
+	return strings.ToLower(clean) // Converts the entire cleaned filename to lowercase and returns it.
+}
+
+// Checks whether a given directory exists
+func directoryExists(path string) bool {
+	directory, err := os.Stat(path) // Get info for the path
+	if err != nil {
+		return false // Return false if error occurs
+	}
+	return directory.IsDir() // Return true if it's a directory
+}
+
+// Creates a directory at given path with provided permissions
+func createDirectory(path string, permission os.FileMode) {
+	err := os.Mkdir(path, permission) // Attempt to create directory
+	if err != nil {
+		log.Println(err) // Log error if creation fails
 	}
 }
