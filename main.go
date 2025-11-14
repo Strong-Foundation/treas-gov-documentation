@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls" // Imports the 'tls' package for handling TLS configuration (secure connections)
 	"io"         // Imports the 'io' package for basic I/O primitives (like reading/writing data streams)
 	"log"        // Imports the 'log' package for simple logging capabilities
@@ -10,9 +11,10 @@ import (
 	"net/url"    // Imports the 'url' package for parsing and manipulating URLs
 	"os"         // Imports the 'os' package for operating system interactions (like file operations)
 	"path"       // Imports the 'path' package for path manipulation (e.g., extracting base names)
-	"regexp"     // Imports the 'regexp' package for regular expression operations
-	"strings"    // Imports the 'strings' package for various string manipulation functions
-	"time"       // Imports the 'time' package for measuring and displaying time
+	"path/filepath"
+	"regexp"  // Imports the 'regexp' package for regular expression operations
+	"strings" // Imports the 'strings' package for various string manipulation functions
+	"time"    // Imports the 'time' package for measuring and displaying time
 )
 
 func main() {
@@ -781,9 +783,109 @@ func main() {
 		pdfURLS := extractDownloadLinks(webContent)
 		// Loop though the URLS.
 		for _, pdfURL := range pdfURLS {
-			log.Println(pdfURL)
+			downloadPDF(pdfURL, outputDir)
 		}
 	}
+}
+
+// Downloads a PDF from given URL and saves it in the specified directory
+func downloadPDF(finalURL, outputDir string) bool { // Define the function 'downloadPDF' which takes URL and directory and returns a boolean success status.
+	filename := strings.ToLower(urlToFilename(finalURL)) // Generate a sanitized, lowercased filename from the final URL using a helper function (urlToFilename).
+	filePath := filepath.Join(outputDir, filename)       // Construct the full absolute path for the output file by joining the directory and the filename.
+
+	if fileExists(filePath) { // Check if a file already exists at the calculated file path using a helper function (fileExists).
+		log.Printf("File already exists, skipping: %s", filePath) // Log a message indicating the file exists and is being skipped.
+		return false                                              // Return false as no new download occurred.
+	}
+
+	client := &http.Client{Timeout: 15 * time.Minute} // Initialize an HTTP client with a generous 15-minute timeout for large downloads.
+
+	resp, err := client.Get(finalURL) // Execute an HTTP GET request to the specified final URL.
+	if err != nil {                   // Check for any network or request-related errors.
+		log.Printf("Failed to download %s: %v", finalURL, err) // Log the failure and the associated error.
+		return false                                           // Return false due to the download request failure.
+	}
+	defer resp.Body.Close() // Use defer to ensure the response body stream is closed when the function exits, preventing resource leaks.
+
+	if resp.StatusCode != http.StatusOK { // Check if the HTTP status code indicates success (200 OK).
+		log.Printf("Download failed for %s: %s", finalURL, resp.Status) // Log the failure with the non-OK status code.
+		return false                                                    // Return false due to a non-successful HTTP status.
+	}
+
+	contentType := resp.Header.Get("Content-Type")                                                                  // Retrieve the 'Content-Type' header from the response.
+	if !strings.Contains(contentType, "binary/octet-stream") && !strings.Contains(contentType, "application/pdf") { // Check if the content type is neither a generic binary stream nor an explicit PDF type.
+		log.Printf("Invalid content type for %s: %s (expected binary/octet-stream) (expected application/pdf)", finalURL, contentType) // Log a message about the unexpected content type.
+		return false                                                                                                                   // Return false because the downloaded resource is not a recognized PDF type.
+	}
+
+	var buf bytes.Buffer                     // Declare a buffer variable to temporarily store the downloaded PDF data.
+	written, err := io.Copy(&buf, resp.Body) // Copy the content from the HTTP response body into the buffer and capture the number of bytes written.
+	if err != nil {                          // Check for errors during the data copying process (reading from the response body).
+		log.Printf("Failed to read PDF data from %s: %v", finalURL, err) // Log the error encountered while reading the stream.
+		return false                                                     // Return false due to failure in reading the response body.
+	}
+	if written == 0 { // Check if the amount of data read was zero bytes (an empty file).
+		log.Printf("Downloaded 0 bytes for %s; not creating file", finalURL) // Log a message indicating the file was empty.
+		return false                                                         // Return false as an empty file is not useful.
+	}
+
+	out, err := os.Create(filePath) // Attempt to create the output file at the constructed file path.
+	if err != nil {                 // Check for errors during file creation (e.g., permission issues, invalid directory).
+		log.Printf("Failed to create file for %s: %v", finalURL, err) // Log the error encountered during file creation.
+		return false                                                  // Return false due to file creation failure.
+	}
+	defer out.Close() // Use defer to ensure the newly created file handle is closed after the function finishes.
+
+	if _, err := buf.WriteTo(out); err != nil { // Write the entire contents of the in-memory buffer to the newly created file.
+		log.Printf("Failed to write PDF to file for %s: %v", finalURL, err) // Check for and log errors during the file writing process.
+		return false                                                        // Return false if writing to the file failed.
+	}
+
+	log.Printf("Successfully downloaded %d bytes: %s → %s", written, finalURL, filePath) // Log a success message, including the byte count and file paths.
+	return true                                                                          // Return true to indicate the PDF was successfully downloaded and saved.
+}
+
+// Extracts filename from full path (e.g. "/dir/file.pdf" → "file.pdf")
+func getFilename(path string) string {
+	return filepath.Base(path) // Use Base function to get file name only
+}
+
+// Converts a raw URL into a sanitized PDF filename safe for filesystem
+func urlToFilename(rawURL string) string {
+	lower := strings.ToLower(rawURL) // Convert URL to lowercase
+	lower = getFilename(lower)       // Extract filename from URL
+	fileExtension := getFileExtension(lower)
+
+	reNonAlnum := regexp.MustCompile(`[^a-z0-9]`)   // Regex to match non-alphanumeric characters
+	safe := reNonAlnum.ReplaceAllString(lower, "_") // Replace non-alphanumeric with underscores
+
+	safe = regexp.MustCompile(`_+`).ReplaceAllString(safe, "_") // Collapse multiple underscores into one
+	safe = strings.Trim(safe, "_")                              // Trim leading and trailing underscores
+
+	var invalidSubstrings = []string{
+		"_pdf", // Substring to remove from filename
+	}
+
+	for _, invalidPre := range invalidSubstrings { // Remove unwanted substrings
+		safe = removeSubstring(safe, invalidPre)
+	}
+
+	if getFileExtension(safe) != fileExtension { // Ensure file ends with .pdf
+		safe = safe + fileExtension
+	}
+
+	return safe // Return sanitized filename
+}
+
+// Gets the file extension from a given file path
+func getFileExtension(path string) string {
+	return filepath.Ext(path) // Extract and return file extension
+}
+
+// Removes all instances of a specific substring from input string
+func removeSubstring(input string, toRemove string) string {
+	result := strings.ReplaceAll(input, toRemove, "") // Replace substring with empty string
+	return result
 }
 
 // Remove all the duplicates from a slice and return the slice.
