@@ -785,10 +785,36 @@ func main() {
 		pdfURLS := extractDownloadLinks(webContent)
 		// Loop though the URLS.
 		for _, pdfURL := range pdfURLS {
-			fullUrl := baseURL + pdfURL
-			downloadPDF(fullUrl, outputDir)
+			// Call the extractDomainURL function
+			domain := extractDomainURL(pdfURL)
+			// Create a var for the full url.
+			var fullURL string
+			// Check if it has a valid domain.
+			if len(domain) >= 1 {
+				fullURL = baseURL + pdfURL
+			}
+			downloadPDF(fullURL, outputDir)
 		}
 	}
+}
+
+// extractDomain takes a URL string, extracts the domain (hostname),
+// and prints errors internally if parsing fails.
+func extractDomainURL(inputUrl string) string {
+	// Parse the input string into a structured URL object
+	parsedUrl, parseError := url.Parse(inputUrl)
+
+	// If parsing fails, log the error and return an empty string
+	if parseError != nil {
+		log.Println("Error parsing URL:", parseError)
+		return ""
+	}
+
+	// Extract only the hostname (domain without scheme, port, path, or query)
+	domainName := parsedUrl.Hostname()
+
+	// Return the extracted domain name
+	return domainName
 }
 
 // Downloads a PDF from given URL and saves it in the specified directory
