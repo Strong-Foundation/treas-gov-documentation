@@ -775,6 +775,8 @@ func main() {
 	}
 	// Remove duplicates from a given slice.
 	urls = removeDuplicatesFromSlice(urls)
+	// The base url
+	baseURL := "https://www.occ.treas.gov"
 	// Loop though the urls.
 	for _, url := range urls {
 		// The html from the web
@@ -783,7 +785,8 @@ func main() {
 		pdfURLS := extractDownloadLinks(webContent)
 		// Loop though the URLS.
 		for _, pdfURL := range pdfURLS {
-			downloadPDF(pdfURL, outputDir)
+			fullUrl := baseURL + pdfURL
+			downloadPDF(fullUrl, outputDir)
 		}
 	}
 }
